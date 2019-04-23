@@ -135,17 +135,17 @@ govpp_stat_segment_data_get_combined_counter_index_bytes(stat_segment_data_t *da
 	return data->combined_counter_vec[index][index2].bytes;
 }
 
-static uint8_t**
-govpp_stat_segment_data_get_name_vector(stat_segment_data_t *data)
-{
-	return data->name_vector;
-}
+// static uint8_t**
+// govpp_stat_segment_data_get_name_vector(stat_segment_data_t *data)
+// {
+// 	return data->name_vector;
+// }
 
-static char*
-govpp_stat_segment_data_get_name_vector_index(stat_segment_data_t *data, int index)
-{
-	return data->name_vector[index];
-}
+// static char*
+// govpp_stat_segment_data_get_name_vector_index(stat_segment_data_t *data, int index)
+// {
+// 	return data->name_vector[index];
+// }
 
 static void
 govpp_stat_segment_data_free(stat_segment_data_t *data)
@@ -296,7 +296,8 @@ func (c *statClient) DumpStats(patterns ...string) (stats []*adapter.StatEntry, 
 			stat.Data = adapter.CombinedCounterStat(vector)
 
 		case adapter.NameVector:
-			length := int(C.govpp_stat_segment_vec_len(unsafe.Pointer(C.govpp_stat_segment_data_get_name_vector(&v))))
+			fallthrough
+			/*length := int(C.govpp_stat_segment_vec_len(unsafe.Pointer(C.govpp_stat_segment_data_get_name_vector(&v))))
 			var vector []adapter.Name
 			for k := 0; k < length; k++ {
 				s := C.govpp_stat_segment_data_get_name_vector_index(&v, C.int(k))
@@ -306,7 +307,7 @@ func (c *statClient) DumpStats(patterns ...string) (stats []*adapter.StatEntry, 
 				}
 				vector = append(vector, name)
 			}
-			stat.Data = adapter.NameStat(vector)
+			stat.Data = adapter.NameStat(vector)*/
 
 		default:
 			fmt.Fprintf(os.Stderr, "invalid stat type: %v (%v)\n", typ, name)
