@@ -1,0 +1,23 @@
+dist: xenial
+services: docker
+
+language: go
+go:
+  - "1.12.x"
+
+before_script:
+  - export VPP_IMG="ligato/vpp-base:master"
+  - docker pull $VPP_IMG
+
+script:
+  - make install
+  - docker run -it --rm -v $(pwd):/govpp -w /govpp -u $(id -u):$(id -g) ligato/vpp-base:master cp -r /usr/share/vpp/api /govpp/vppapi
+  - binapi-generator --input-dir=vppapi/core --output-dir=binapi --include-services --continue-onerror --debug
+  - binapi-generator --input-dir=vppapi/plugins --output-dir=binapi --include-services --continue-onerror --debug
+
+notifications:
+  slack:
+    rooms:
+      - ligato:QNOK2VgHH6k40T8nQxmSgRmo
+    on_success: change
+    on_failure: always
