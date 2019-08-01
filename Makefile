@@ -3,6 +3,8 @@ VERSION ?= $(shell git describe --always --tags --dirty)
 BINAPI_DIR ?= $(shell cd examples/bin_api && pwd)
 VPP_VERSION := $(shell apt-cache show vpp | grep Version: | cut -d' ' -f2-)
 
+GO111MODULE=on
+
 all: test build examples
 
 install:
