@@ -12,6 +12,7 @@ env:
 before_script:
   - export VPP_IMG="ligato/vpp-base:latest"
   - docker pull $VPP_IMG
+  - go mod download
 
 script:
   - make test
