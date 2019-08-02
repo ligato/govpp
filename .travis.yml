@@ -5,6 +5,10 @@ language: go
 go:
   - "1.12.x"
 
+env:
+  global:
+    - GO_BUILD_TAGS=novpp
+
 before_script:
   - export VPP_IMG="ligato/vpp-base:latest"
   - docker pull $VPP_IMG
