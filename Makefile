@@ -1,62 +1,73 @@
 SHELL = /bin/bash
 
-VERSION  	= $(shell git describe --always --tags --dirty)
+VERSION ?= $(shell git describe --always --tags --dirty)
+COMMIT ?= $(shell git rev-parse HEAD)
+BUILD_STAMP ?= $(shell git log -1 --format="%ct")
+BUILD_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+BUILD_HOST ?= $(shell hostname)
+BUILD_USER ?= $(shell id -un)
+
 VPP_VERSION	= $(shell dpkg-query -f '\${Version}' -W vpp)
 
 VPP_IMG 	?= ligato/vpp-base:latest
 BINAPI_DIR	?= ./examples/binapi
-GENBINAPI_CMDS = $(shell go generate -n ./examples/binapi 2>&1 | tr "\n" ";")
+GENBINAPI_CMDS = $(shell go generate -n $(BINAPI_DIR) 2>&1 | tr "\n" ";")
 
-GO = GO111MODULE=on go
+GO ?= GO111MODULE=on go
+GOVPP_PKG := $(shell go list)
+
+LDFLAGS = -w -s \
+	-X ${GOVPP_PKG}/version.version=$(VERSION) \
+	-X ${GOVPP_PKG}/version.commitHash=$(COMMIT) \
+	-X ${GOVPP_PKG}/version.buildStamp=$(BUILD_STAMP) \
+	-X ${GOVPP_PKG}/version.buildBranch=$(BUILD_BRANCH) \
+	-X ${GOVPP_PKG}/version.buildUser=$(BUILD_USER) \
+	-X ${GOVPP_PKG}/version.buildHost=$(BUILD_HOST)
+
+GO_BUILD_ARGS = -ldflags "${LDFLAGS}"
+
+ifeq ($(V),1)
+GO_BUILD_ARGS += -v
+endif
+
+ifneq ($(GO_BUILD_TAGS),)
+GO_BUILD_ARGS += -tags="${GO_BUILD_TAGS}"
+endif
 
 all: test build examples
 
 install:
 	@echo "=> installing binapi-generator ${VERSION}"
-	$(GO) install ./cmd/binapi-generator
+	$(GO) install ${GO_BUILD_ARGS} ./cmd/binapi-generator
 
 build:
 	@echo "=> building binapi-generator ${VERSION}"
-	cd cmd/binapi-generator && $(GO) build -v
+	cd cmd/binapi-generator && $(GO) build ${GO_BUILD_ARGS}
 
 examples:
 	@echo "=> building examples"
-	cd examples/simple-client && $(GO) build -v
-	cd examples/stats-api && $(GO) build -v
-	cd examples/perf-bench && $(GO) build -v
-	cd examples/union-example && $(GO) build -v
+	cd examples/simple-client && $(GO) build ${GO_BUILD_ARGS} -v
+	cd examples/stats-api && $(GO) build ${GO_BUILD_ARGS} -v
+	cd examples/perf-bench && $(GO) build ${GO_BUILD_ARGS} -v
+	cd examples/union-example && $(GO) build ${GO_BUILD_ARGS} -v
+	cd examples/rpc-service && $(GO) build ${GO_BUILD_ARGS} -v
+
+clean:
+	@echo "=> cleaning"
+	go clean -v ./cmd/...
+	go clean -v ./examples/...
 
 test:
 	@echo "=> running tests"
 	$(GO) test -v ./cmd/...
-	$(GO) test -v ./ ./adapter ./core ./api ./codec
+	$(GO) test -v ./ ./api ./adapter ./codec ./core
 
-test-cover:
-	@echo "=> running tests with coverage"
-	$(GO) test -cover ./cmd/...
-	$(GO) test -cover ./ ./adapter ./core ./api ./codec
-
-extras:
-	@echo "=> building extras"
-	cd extras/libmemif/examples/gopacket && $(GO) build -v
-	cd extras/libmemif/examples/icmp-responder && $(GO) build -v
-	cd extras/libmemif/examples/jumbo-frames && $(GO) build -v
-	cd extras/libmemif/examples/raw-data && $(GO) build -v
-
-clean:
-	@echo "=> cleaning"
-	rm -f cmd/binapi-generator/binapi-generator
-	rm -f examples/perf-bench/perf-bench
-	rm -f examples/simple-client/simple-client
-	rm -f examples/stats-api/stats-api
-	rm -f examples/union-example/union-example
-	rm -f extras/libmemif/examples/gopacket/gopacket
-	rm -f extras/libmemif/examples/icmp-responder/icmp-responder
-	rm -f extras/libmemif/examples/jumbo-frames/jumbo-frames
-	rm -f extras/libmemif/examples/raw-data/raw-data
+lint:
+	@echo "=> running linter"
+	@golint ./... | grep -v vendor | grep -v /binapi/ || true
 
 gen-binapi-docker: install
-	@echo "=> generating binapi VPP $(VPP_VERSION)"
+	@echo "=> generating binapi in docker image ${VPP_IMG}"
 	docker run -t --rm \
 		-v "$(shell which gofmt):/usr/local/bin/gofmt:ro" \
 		-v "$(shell which binapi-generator):/usr/local/bin/binapi-generator:ro" \
@@ -73,16 +84,11 @@ generate:
 	@echo "=> generating code"
 	$(GO) generate -x ./...
 
-update-vppapi:
-	@echo "=> updating API JSON files using installed VPP ${VPP_VERSION}"
-	@cd ${BINAPI_DIR} && find . -type f -name '*.api.json' -exec cp /usr/share/vpp/api/'{}' '{}' \;
-	@echo ${VPP_VERSION} > ${BINAPI_DIR}/VPP_VERSION
+extras:
+	@make -C extras
 
-lint:
-	@echo "=> running linter"
-	@golint ./... | grep -v vendor | grep -v /binapi/ || true
 
 .PHONY: all \
-	install build examples test \
-	extras clean lint \
-	generate generate-binapi gen-binapi-docker
+	install build examples clean test lint \
+	generate generate-binapi gen-binapi-docker \
+	extras
