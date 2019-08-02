@@ -5,6 +5,8 @@ language: go
 go:
   - "1.12.x"
 
+go_import_path: git.fd.io/govpp.git
+
 env:
   global:
     - GO_BUILD_TAGS=novpp
@@ -12,7 +14,7 @@ env:
 before_script:
   - export VPP_IMG="ligato/vpp-base:latest"
   - docker pull $VPP_IMG
-  - go mod download
+  - GO111MODULE=on go mod download
 
 script:
   - make test

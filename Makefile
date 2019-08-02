@@ -1,5 +1,8 @@
 SHELL = /bin/bash
 
+GO ?= GO111MODULE=on go
+GOVPP_PKG := $(shell go list)
+
 VERSION ?= $(shell git describe --always --tags --dirty)
 COMMIT ?= $(shell git rev-parse HEAD)
 BUILD_STAMP ?= $(shell git log -1 --format="%ct")
@@ -11,10 +14,6 @@ VPP_VERSION	= $(shell dpkg-query -f '\${Version}' -W vpp)
 
 VPP_IMG 	?= ligato/vpp-base:latest
 BINAPI_DIR	?= ./examples/binapi
-GENBINAPI_CMDS = $(shell go generate -n $(BINAPI_DIR) 2>&1 | tr "\n" ";")
-
-GO ?= GO111MODULE=on go
-GOVPP_PKG := $(shell go list)
 
 LDFLAGS = -w -s \
 	-X ${GOVPP_PKG}/version.version=$(VERSION) \
@@ -25,11 +24,9 @@ LDFLAGS = -w -s \
 	-X ${GOVPP_PKG}/version.buildHost=$(BUILD_HOST)
 
 GO_BUILD_ARGS = -ldflags "${LDFLAGS}"
-
 ifeq ($(V),1)
 GO_BUILD_ARGS += -v
 endif
-
 ifneq ($(GO_BUILD_TAGS),)
 GO_BUILD_ARGS += -tags="${GO_BUILD_TAGS}"
 endif
@@ -68,13 +65,14 @@ lint:
 
 gen-binapi-docker: install
 	@echo "=> generating binapi in docker image ${VPP_IMG}"
+	$(eval cmds := $(shell go generate -n $(BINAPI_DIR) 2>&1 | tr "\n" ";"))
 	docker run -t --rm \
 		-v "$(shell which gofmt):/usr/local/bin/gofmt:ro" \
 		-v "$(shell which binapi-generator):/usr/local/bin/binapi-generator:ro" \
 		-v "$(shell pwd):/govpp" -w /govpp \
 		-u "$(shell id -u):$(shell id -g)" \
 		"${VPP_IMG}" \
-	  sh -xc "cd $(BINAPI_DIR) && $(GENBINAPI_CMDS)"
+	  sh -xc "cd $(BINAPI_DIR) && $(cmds)"
 
 generate-binapi: install
 	@echo "=> generating binapi VPP $(VPP_VERSION)"
