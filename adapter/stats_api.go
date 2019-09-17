@@ -25,23 +25,27 @@ const (
 )
 
 var (
-	ErrStatDirBusy  = errors.New("stat dir busy")
-	ErrStatDumpBusy = errors.New("stat dump busy")
+	ErrStatDirBusy   = errors.New("stats dir busy")
+	ErrStatDumpBusy  = errors.New("stats dump busy")
+	ErrStatDataStale = errors.New("stats data stale")
 )
 
 // StatsAPI provides connection to VPP stats API.
 type StatsAPI interface {
 	// Connect establishes client connection to the stats API.
 	Connect() error
-
 	// Disconnect terminates client connection.
 	Disconnect() error
 
-	// ListStats lists names for all stats.
+	// ListStats lists names for stats matching patterns.
 	ListStats(patterns ...string) (statNames []string, err error)
-
 	// DumpStats dumps all stat entries.
-	DumpStats(patterns ...string) ([]*StatEntry, error)
+	DumpStats(patterns ...string) (entries []StatEntry, err error)
+
+	// PrepareDir prepares new stat dir for entries that match any of prefixes.
+	PrepareDir(prefixes ...string) (*StatDir, error)
+	// UpdateDir updates stat dir and all of their entries.
+	UpdateDir(dir *StatDir) error
 }
 
 // StatType represents type of stat directory and simply
@@ -73,10 +77,17 @@ func (d StatType) String() string {
 	return fmt.Sprintf("UnknownStatType(%d)", d)
 }
 
+// StatDir defines directory of stats entries created by PrepareDir.
+type StatDir struct {
+	Epoch   int64
+	Indexes []uint32
+	Entries []StatEntry
+}
+
 // StatEntry represents single stat entry. The type of stat stored in Data
 // is defined by Type.
 type StatEntry struct {
-	Name string
+	Name []byte
 	Type StatType
 	Data Stat
 }
@@ -85,13 +96,30 @@ type StatEntry struct {
 type Counter uint64
 
 // CombinedCounter represents counter with two values, for packet count and bytes count.
-type CombinedCounter struct {
-	Packets Counter
-	Bytes   Counter
+type CombinedCounter [2]uint64
+
+func (c CombinedCounter) Packets() uint64 {
+	return c[0]
+}
+func (c CombinedCounter) Bytes() uint64 {
+	return c[1]
 }
 
 // Name represents string value stored under name vector.
-type Name string
+type Name []byte
+
+func (n Name) String() string {
+	return string(n)
+}
+
+// Data represents some type of stat which is usually defined by StatType.
+type Stat interface {
+	// IsZero returns true if all of its values equal to zero.
+	IsZero() bool
+
+	// isStat is intentionally  unexported to limit implementations of interface to this package,
+	isStat()
+}
 
 // ScalarStat represents stat for ScalarIndex.
 type ScalarStat float64
@@ -112,14 +140,55 @@ type CombinedCounterStat [][]CombinedCounter
 // NameStat represents stat for NameVector.
 type NameStat []Name
 
-// Data represents some type of stat which is usually defined by StatType.
-type Stat interface {
-	// isStat is unexported to limit implementations of Data interface to this package,
-	isStat()
-}
-
 func (ScalarStat) isStat()          {}
 func (ErrorStat) isStat()           {}
 func (SimpleCounterStat) isStat()   {}
 func (CombinedCounterStat) isStat() {}
 func (NameStat) isStat()            {}
+
+func (s ScalarStat) IsZero() bool {
+	return s == 0
+}
+func (s ErrorStat) IsZero() bool {
+	return s == 0
+}
+func (s SimpleCounterStat) IsZero() bool {
+	if s == nil {
+		return true
+	}
+	for _, ss := range s {
+		for _, sss := range ss {
+			if sss != 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+func (s CombinedCounterStat) IsZero() bool {
+	if s == nil {
+		return true
+	}
+	for _, ss := range s {
+		if ss == nil {
+			return true
+		}
+		for _, sss := range ss {
+			if sss.Packets() != 0 || sss.Bytes() != 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+func (s NameStat) IsZero() bool {
+	if s == nil {
+		return true
+	}
+	for _, ss := range s {
+		if len(ss) > 0 {
+			return false
+		}
+	}
+	return true
+}

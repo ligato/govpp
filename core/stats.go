@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"path"
 	"strings"
 	"sync/atomic"
@@ -63,7 +62,14 @@ const (
 type StatsConnection struct {
 	statsClient adapter.StatsAPI
 
-	connected uint32 // non-zero if the adapter is connected to VPP
+	// connected is true if the adapter is connected to VPP
+	connected uint32
+
+	errorStatsData *adapter.StatDir
+	nodeStatsData  *adapter.StatDir
+	ifaceStatsData *adapter.StatDir
+	sysStatsData   *adapter.StatDir
+	bufStatsData   *adapter.StatDir
 }
 
 func newStatsConnection(stats adapter.StatsAPI) *StatsConnection {
@@ -105,7 +111,6 @@ func (c *StatsConnection) Disconnect() {
 	if c == nil {
 		return
 	}
-
 	if c.statsClient != nil {
 		c.disconnectClient()
 	}
@@ -113,301 +118,283 @@ func (c *StatsConnection) Disconnect() {
 
 func (c *StatsConnection) disconnectClient() {
 	if atomic.CompareAndSwapUint32(&c.connected, 1, 0) {
-		c.statsClient.Disconnect()
+		if err := c.statsClient.Disconnect(); err != nil {
+			log.Debugf("disconnecting stats client failed: %v", err)
+		}
 	}
 }
 
-// GetSystemStats retrieves VPP system stats.
-func (c *StatsConnection) GetSystemStats() (*api.SystemStats, error) {
-	stats, err := c.statsClient.DumpStats(SystemStatsPrefix)
-	if err != nil {
-		return nil, err
-	}
-
-	sysStats := &api.SystemStats{}
-
-	for _, stat := range stats {
-		switch stat.Name {
-		case SystemStats_VectorRate:
-			sysStats.VectorRate = scalarStatToFloat64(stat.Data)
-		case SystemStats_InputRate:
-			sysStats.InputRate = scalarStatToFloat64(stat.Data)
-		case SystemStats_LastUpdate:
-			sysStats.LastUpdate = scalarStatToFloat64(stat.Data)
-		case SystemStats_LastStatsClear:
-			sysStats.LastStatsClear = scalarStatToFloat64(stat.Data)
-		case SystemStats_Heartbeat:
-			sysStats.Heartbeat = scalarStatToFloat64(stat.Data)
+// UpdateSystemStats retrieves VPP system stats.
+func (c *StatsConnection) GetSystemStats(sysStats *api.SystemStats) (err error) {
+	if c.sysStatsData == nil {
+		c.sysStatsData, err = c.statsClient.PrepareDir(SystemStatsPrefix)
+		if err != nil {
+			return err
+		}
+	} else {
+		if err := c.statsClient.UpdateDir(c.sysStatsData); err != nil {
+			return err
 		}
 	}
 
-	return sysStats, nil
+	for _, stat := range c.sysStatsData.Entries {
+		var val float64
+		s, ok := stat.Data.(adapter.ScalarStat)
+		if ok {
+			val = float64(s)
+		}
+		switch string(stat.Name) {
+		case SystemStats_VectorRate:
+			sysStats.VectorRate = val
+		case SystemStats_InputRate:
+			sysStats.InputRate = val
+		case SystemStats_LastUpdate:
+			sysStats.LastUpdate = val
+		case SystemStats_LastStatsClear:
+			sysStats.LastStatsClear = val
+		case SystemStats_Heartbeat:
+			sysStats.Heartbeat = val
+		}
+	}
+
+	return nil
 }
 
 // GetErrorStats retrieves VPP error stats.
-func (c *StatsConnection) GetErrorStats(names ...string) (*api.ErrorStats, error) {
-	var patterns []string
-	if len(names) > 0 {
-		patterns = make([]string, len(names))
-		for i, name := range names {
-			patterns[i] = CounterStatsPrefix + name
+func (c *StatsConnection) GetErrorStats(errorStats *api.ErrorStats) (err error) {
+	if c.errorStatsData == nil {
+		c.errorStatsData, err = c.statsClient.PrepareDir(CounterStatsPrefix)
+		if err != nil {
+			return err
 		}
 	} else {
-		// retrieve all error counters by default
-		patterns = []string{CounterStatsPrefix}
-	}
-	stats, err := c.statsClient.DumpStats(patterns...)
-	if err != nil {
-		return nil, err
+		if err := c.statsClient.UpdateDir(c.errorStatsData); err != nil {
+			return err
+		}
 	}
 
-	var errorStats = &api.ErrorStats{}
-
-	for _, stat := range stats {
-		statName := strings.TrimPrefix(stat.Name, CounterStatsPrefix)
-
-		/* TODO: deal with stats that contain '/' in node/counter name
-		parts := strings.Split(statName, "/")
-		var nodeName, counterName string
-		switch len(parts) {
-		case 2:
-			nodeName = parts[0]
-			counterName = parts[1]
-		case 3:
-			nodeName = parts[0] + parts[1]
-			counterName = parts[2]
-		}*/
-
-		errorStats.Errors = append(errorStats.Errors, api.ErrorCounter{
-			CounterName: statName,
-			Value:       errorStatToUint64(stat.Data),
-		})
+	if errorStats.Errors == nil {
+		errorStats.Errors = make([]api.ErrorCounter, len(c.errorStatsData.Entries))
+		for i := 0; i < len(c.errorStatsData.Entries); i++ {
+			errorStats.Errors[i].CounterName = string(c.errorStatsData.Entries[i].Name)
+		}
 	}
 
-	return errorStats, nil
+	for i, stat := range c.errorStatsData.Entries {
+		errorStats.Errors[i].Value = uint64(stat.Data.(adapter.ErrorStat))
+	}
+
+	return nil
 }
 
-// GetNodeStats retrieves VPP per node stats.
-func (c *StatsConnection) GetNodeStats() (*api.NodeStats, error) {
-	stats, err := c.statsClient.DumpStats(NodeStatsPrefix)
-	if err != nil {
-		return nil, err
+func (c *StatsConnection) GetNodeStats(nodeStats *api.NodeStats) (err error) {
+	if c.nodeStatsData == nil {
+		c.nodeStatsData, err = c.statsClient.PrepareDir(NodeStatsPrefix)
+		if err != nil {
+			return err
+		}
+	} else {
+		if err := c.statsClient.UpdateDir(c.nodeStatsData); err != nil {
+			return err
+		}
 	}
 
-	nodeStats := &api.NodeStats{}
-
-	var setPerNode = func(perNode []uint64, fn func(c *api.NodeCounters, v uint64)) {
+	prepNodes := func(l int) {
 		if nodeStats.Nodes == nil {
-			nodeStats.Nodes = make([]api.NodeCounters, len(perNode))
-			for i := range perNode {
+			nodeStats.Nodes = make([]api.NodeCounters, l)
+			for i := 0; i < l; i++ {
 				nodeStats.Nodes[i].NodeIndex = uint32(i)
 			}
 		}
-		for i, v := range perNode {
-			if len(nodeStats.Nodes) <= i {
-				break
-			}
-			nodeCounters := nodeStats.Nodes[i]
-			fn(&nodeCounters, v)
-			nodeStats.Nodes[i] = nodeCounters
+	}
+	perNode := func(stat adapter.StatEntry, fn func(*api.NodeCounters, uint64)) {
+		s := stat.Data.(adapter.SimpleCounterStat)
+		prepNodes(len(s[0]))
+		for i := range nodeStats.Nodes {
+			val := reduceSimpleCounterStatIndex(s, i)
+			fn(&nodeStats.Nodes[i], val)
 		}
 	}
 
-	for _, stat := range stats {
-		switch stat.Name {
+	for _, stat := range c.nodeStatsData.Entries {
+		switch string(stat.Name) {
 		case NodeStats_Names:
-			if names, ok := stat.Data.(adapter.NameStat); !ok {
-				return nil, fmt.Errorf("invalid stat type for %s", stat.Name)
-			} else {
-				if nodeStats.Nodes == nil {
-					nodeStats.Nodes = make([]api.NodeCounters, len(names))
-					for i := range names {
-						nodeStats.Nodes[i].NodeIndex = uint32(i)
-					}
-				}
-				for i, name := range names {
-					nodeStats.Nodes[i].NodeName = string(name)
+			stat := stat.Data.(adapter.NameStat)
+			prepNodes(len(stat))
+			for i, nc := range nodeStats.Nodes {
+				if nc.NodeName != string(stat[i]) {
+					nc.NodeName = string(stat[i])
+					nodeStats.Nodes[i] = nc
 				}
 			}
 		case NodeStats_Clocks:
-			setPerNode(reduceSimpleCounterStat(stat.Data), func(c *api.NodeCounters, v uint64) {
-				c.Clocks = v
+			perNode(stat, func(node *api.NodeCounters, val uint64) {
+				node.Clocks = val
 			})
 		case NodeStats_Vectors:
-			setPerNode(reduceSimpleCounterStat(stat.Data), func(c *api.NodeCounters, v uint64) {
-				c.Vectors = v
+			perNode(stat, func(node *api.NodeCounters, val uint64) {
+				node.Vectors = val
 			})
 		case NodeStats_Calls:
-			setPerNode(reduceSimpleCounterStat(stat.Data), func(c *api.NodeCounters, v uint64) {
-				c.Calls = v
+			perNode(stat, func(node *api.NodeCounters, val uint64) {
+				node.Calls = val
 			})
 		case NodeStats_Suspends:
-			setPerNode(reduceSimpleCounterStat(stat.Data), func(c *api.NodeCounters, v uint64) {
-				c.Suspends = v
+			perNode(stat, func(node *api.NodeCounters, val uint64) {
+				node.Suspends = val
 			})
 		}
 	}
 
-	return nodeStats, nil
+	return nil
 }
 
 // GetInterfaceStats retrieves VPP per interface stats.
-func (c *StatsConnection) GetInterfaceStats() (*api.InterfaceStats, error) {
-	stats, err := c.statsClient.DumpStats(InterfaceStatsPrefix)
-	if err != nil {
-		return nil, err
-	}
-
-	ifStats := &api.InterfaceStats{}
-
-	var setPerIf = func(perIf []uint64, fn func(c *api.InterfaceCounters, v uint64)) {
-		if ifStats.Interfaces == nil {
-			ifStats.Interfaces = make([]api.InterfaceCounters, len(perIf))
-			for i := range perIf {
-				ifStats.Interfaces[i].InterfaceIndex = uint32(i)
-			}
+func (c *StatsConnection) GetInterfaceStats(ifaceStats *api.InterfaceStats) (err error) {
+	if c.ifaceStatsData == nil {
+		c.ifaceStatsData, err = c.statsClient.PrepareDir(InterfaceStatsPrefix)
+		if err != nil {
+			return err
 		}
-		for i, v := range perIf {
-			if len(ifStats.Interfaces) <= i {
-				break
-			}
-			ifCounters := ifStats.Interfaces[i]
-			fn(&ifCounters, v)
-			ifStats.Interfaces[i] = ifCounters
+	} else {
+		if err := c.statsClient.UpdateDir(c.ifaceStatsData); err != nil {
+			return err
 		}
 	}
 
-	for _, stat := range stats {
-		switch stat.Name {
+	prep := func(l int) {
+		if ifaceStats.Interfaces == nil {
+			ifaceStats.Interfaces = make([]api.InterfaceCounters, l)
+			for i := 0; i < l; i++ {
+				ifaceStats.Interfaces[i].InterfaceIndex = uint32(i)
+			}
+		}
+	}
+	perNode := func(stat adapter.StatEntry, fn func(*api.InterfaceCounters, uint64)) {
+		s := stat.Data.(adapter.SimpleCounterStat)
+		prep(len(s[0]))
+		for i := range ifaceStats.Interfaces {
+			val := reduceSimpleCounterStatIndex(s, i)
+			fn(&ifaceStats.Interfaces[i], val)
+		}
+	}
+	perNodeComb := func(stat adapter.StatEntry, fn func(*api.InterfaceCounters, [2]uint64)) {
+		s := stat.Data.(adapter.CombinedCounterStat)
+		prep(len(s[0]))
+		for i := range ifaceStats.Interfaces {
+			val := reduceCombinedCounterStatIndex(s, i)
+			fn(&ifaceStats.Interfaces[i], val)
+		}
+	}
+
+	for _, stat := range c.ifaceStatsData.Entries {
+		switch string(stat.Name) {
 		case InterfaceStats_Names:
-			if names, ok := stat.Data.(adapter.NameStat); !ok {
-				return nil, fmt.Errorf("invalid stat type for %s", stat.Name)
-			} else {
-				if ifStats.Interfaces == nil {
-					ifStats.Interfaces = make([]api.InterfaceCounters, len(names))
-					for i := range names {
-						ifStats.Interfaces[i].InterfaceIndex = uint32(i)
-					}
-				}
-				for i, name := range names {
-					ifStats.Interfaces[i].InterfaceName = string(name)
+			stat := stat.Data.(adapter.NameStat)
+			prep(len(stat))
+			for i, nc := range ifaceStats.Interfaces {
+				if nc.InterfaceName != string(stat[i]) {
+					nc.InterfaceName = string(stat[i])
+					ifaceStats.Interfaces[i] = nc
 				}
 			}
 		case InterfaceStats_Drops:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.Drops = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.Drops = val
 			})
 		case InterfaceStats_Punt:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.Punts = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.Punts = val
 			})
 		case InterfaceStats_IP4:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.IP4 = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.IP4 = val
 			})
 		case InterfaceStats_IP6:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.IP6 = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.IP6 = val
 			})
 		case InterfaceStats_RxNoBuf:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.RxNoBuf = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.RxNoBuf = val
 			})
 		case InterfaceStats_RxMiss:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.RxMiss = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.RxMiss = val
 			})
 		case InterfaceStats_RxError:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.RxErrors = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.RxErrors = val
 			})
 		case InterfaceStats_TxError:
-			setPerIf(reduceSimpleCounterStat(stat.Data), func(c *api.InterfaceCounters, v uint64) {
-				c.TxErrors = v
+			perNode(stat, func(iface *api.InterfaceCounters, val uint64) {
+				iface.TxErrors = val
 			})
 		case InterfaceStats_Rx:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.RxPackets = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.RxBytes = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.Rx.Packets = val[0]
+				iface.Rx.Bytes = val[1]
 			})
 		case InterfaceStats_RxUnicast:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.RxUnicast[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.RxUnicast[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.RxUnicast.Packets = val[0]
+				iface.RxUnicast.Bytes = val[1]
 			})
 		case InterfaceStats_RxMulticast:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.RxMulticast[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.RxMulticast[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.RxMulticast.Packets = val[0]
+				iface.RxMulticast.Bytes = val[1]
 			})
 		case InterfaceStats_RxBroadcast:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.RxBroadcast[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.RxBroadcast[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.RxBroadcast.Packets = val[0]
+				iface.RxBroadcast.Bytes = val[1]
 			})
 		case InterfaceStats_Tx:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.TxPackets = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.TxBytes = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.Tx.Packets = val[0]
+				iface.Tx.Bytes = val[1]
 			})
 		case InterfaceStats_TxUnicastMiss:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.TxUnicastMiss[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.TxUnicastMiss[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.TxUnicastMiss.Packets = val[0]
+				iface.TxUnicastMiss.Bytes = val[1]
 			})
 		case InterfaceStats_TxMulticast:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.TxMulticast[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.TxMulticast[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.TxMulticast.Packets = val[0]
+				iface.TxMulticast.Bytes = val[1]
 			})
 		case InterfaceStats_TxBroadcast:
-			per := reduceCombinedCounterStat(stat.Data)
-			setPerIf(per[0], func(c *api.InterfaceCounters, v uint64) {
-				c.TxBroadcast[0] = v
-			})
-			setPerIf(per[1], func(c *api.InterfaceCounters, v uint64) {
-				c.TxBroadcast[1] = v
+			perNodeComb(stat, func(iface *api.InterfaceCounters, val [2]uint64) {
+				iface.TxBroadcast.Packets = val[0]
+				iface.TxBroadcast.Bytes = val[1]
 			})
 		}
 	}
 
-	return ifStats, nil
+	return nil
 }
 
 // GetBufferStats retrieves VPP buffer pools stats.
-func (c *StatsConnection) GetBufferStats() (*api.BufferStats, error) {
-	stats, err := c.statsClient.DumpStats(BufferStatsPrefix)
-	if err != nil {
-		return nil, err
+func (c *StatsConnection) GetBufferStats(bufStats *api.BufferStats) (err error) {
+	if c.bufStatsData == nil {
+		c.bufStatsData, err = c.statsClient.PrepareDir(BufferStatsPrefix)
+		if err != nil {
+			return err
+		}
+	} else {
+		if err := c.statsClient.UpdateDir(c.bufStatsData); err != nil {
+			return err
+		}
 	}
 
-	bufStats := &api.BufferStats{
-		Buffer: map[string]api.BufferPool{},
+	if bufStats.Buffer == nil {
+		bufStats.Buffer = make(map[string]api.BufferPool)
 	}
 
-	for _, stat := range stats {
-		d, f := path.Split(stat.Name)
+	for _, stat := range c.bufStatsData.Entries {
+		d, f := path.Split(string(stat.Name))
 		d = strings.TrimSuffix(d, "/")
 
 		name := strings.TrimPrefix(d, BufferStatsPrefix)
@@ -416,65 +403,37 @@ func (c *StatsConnection) GetBufferStats() (*api.BufferStats, error) {
 			b.PoolName = name
 		}
 
+		var val float64
+		s, ok := stat.Data.(adapter.ScalarStat)
+		if ok {
+			val = float64(s)
+		}
 		switch f {
 		case BufferStats_Cached:
-			b.Cached = scalarStatToFloat64(stat.Data)
+			b.Cached = val
 		case BufferStats_Used:
-			b.Used = scalarStatToFloat64(stat.Data)
+			b.Used = val
 		case BufferStats_Available:
-			b.Available = scalarStatToFloat64(stat.Data)
+			b.Available = val
 		}
 
 		bufStats.Buffer[name] = b
 	}
 
-	return bufStats, nil
-}
-
-func scalarStatToFloat64(stat adapter.Stat) float64 {
-	if s, ok := stat.(adapter.ScalarStat); ok {
-		return float64(s)
-	}
-	return 0
-}
-
-func errorStatToUint64(stat adapter.Stat) uint64 {
-	if s, ok := stat.(adapter.ErrorStat); ok {
-		return uint64(s)
-	}
-	return 0
-}
-
-func reduceSimpleCounterStat(stat adapter.Stat) []uint64 {
-	if s, ok := stat.(adapter.SimpleCounterStat); ok {
-		if len(s) == 0 {
-			return []uint64{}
-		}
-		var per = make([]uint64, len(s[0]))
-		for _, w := range s {
-			for i, n := range w {
-				per[i] += uint64(n)
-			}
-		}
-		return per
-	}
 	return nil
 }
 
-func reduceCombinedCounterStat(stat adapter.Stat) [2][]uint64 {
-	if s, ok := stat.(adapter.CombinedCounterStat); ok {
-		if len(s) == 0 {
-			return [2][]uint64{{}, {}}
-		}
-		var perPackets = make([]uint64, len(s[0]))
-		var perBytes = make([]uint64, len(s[0]))
-		for _, w := range s {
-			for i, n := range w {
-				perPackets[i] += uint64(n.Packets)
-				perBytes[i] += uint64(n.Bytes)
-			}
-		}
-		return [2][]uint64{perPackets, perBytes}
+func reduceSimpleCounterStatIndex(s adapter.SimpleCounterStat, index int) (val uint64) {
+	for _, w := range s {
+		val += uint64(w[index])
 	}
-	return [2][]uint64{}
+	return val
+}
+
+func reduceCombinedCounterStatIndex(s adapter.CombinedCounterStat, index int) (val [2]uint64) {
+	for _, w := range s {
+		val[0] += uint64(w[index].Packets())
+		val[1] += uint64(w[index].Bytes())
+	}
+	return val
 }

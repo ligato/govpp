@@ -28,8 +28,23 @@ import (
 )
 
 var (
-	maxWaitInProgress = time.Second * 1
+	MaxWaitInProgress    = time.Millisecond * 500
+	CheckDelayInProgress = time.Microsecond * 100
 )
+
+const (
+	MinVersion = 0
+	MaxVersion = 1
+)
+
+func checkVersion(ver uint64) error {
+	if ver < MinVersion {
+		return fmt.Errorf("stat segment version is too old: %v (minimal version: %v)", ver, MinVersion)
+	} else if ver > MaxVersion {
+		return fmt.Errorf("stat segment version is not supported: %v (minimal version: %v)", ver, MaxVersion)
+	}
+	return nil
+}
 
 type statDirectoryType int32
 
@@ -39,7 +54,10 @@ func (t statDirectoryType) String() string {
 
 type statSegDirectoryEntry struct {
 	directoryType statDirectoryType
-	// unionData can represent: offset, index or value
+	// unionData can represent:
+	// - offset
+	// - index
+	// - value
 	unionData    uint64
 	offsetVector uint64
 	name         [128]byte
@@ -98,10 +116,9 @@ func (c *statSegment) connect(sockName string) error {
 	if err != nil {
 		return err
 	}
-
 	size := info.Size()
 
-	Log.Debugf("fd: name=%v size=%v", info.Name(), size)
+	Log.Debugf("fd size=%v", size)
 
 	data, err := syscall.Mmap(int(f.Fd()), 0, int(size), syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
@@ -109,10 +126,10 @@ func (c *statSegment) connect(sockName string) error {
 		return fmt.Errorf("mapping shared memory failed: %v", err)
 	}
 
-	Log.Debugf("successfuly mapped shared memory")
-
 	c.sharedHeader = data
 	c.memorySize = size
+
+	Log.Debugf("successfuly mapped shared memory segment")
 
 	header := c.readHeader()
 	Log.Debugf("stat segment header: %+v", header)
@@ -129,18 +146,24 @@ func (c *statSegment) connect(sockName string) error {
 }
 
 func (c *statSegment) disconnect() error {
-	if err := syscall.Munmap(c.sharedHeader); err != nil {
-		Log.Warnf("unmapping shared memory failed: %v", err)
-		return fmt.Errorf("unmapping shared memory failed: %v", err)
+	if c.sharedHeader == nil {
+		return nil
 	}
 
-	Log.Debugf("successfuly unmapped shared memory")
+	if err := syscall.Munmap(c.sharedHeader); err != nil {
+		Log.Debugf("unmapping shared memory failed: %v", err)
+		return fmt.Errorf("unmapping shared memory failed: %v", err)
+	}
+	c.sharedHeader = nil
 
+	Log.Debugf("successfuly unmapped shared memory")
 	return nil
 }
 
 func (c *statSegment) copyData(dirEntry *statSegDirectoryEntry) adapter.Stat {
-	switch typ := adapter.StatType(dirEntry.directoryType); typ {
+	dirType := adapter.StatType(dirEntry.directoryType)
+
+	switch dirType {
 	case adapter.ScalarIndex:
 		return adapter.ScalarStat(dirEntry.unionData)
 
@@ -152,14 +175,14 @@ func (c *statSegment) copyData(dirEntry *statSegDirectoryEntry) adapter.Stat {
 		if c.oldHeader {
 			// error were not vector (per-worker) in VPP 19.04
 			offset := uintptr(dirEntry.unionData) * unsafe.Sizeof(uint64(0))
-			val := *(*adapter.Counter)(add(offsetVector, offset))
+			val := *(*adapter.Counter)(addOffset(offsetVector, offset))
 			errData = val
 		} else {
 			vecLen := vectorLen(offsetVector)
 			for i := uint64(0); i < vecLen; i++ {
-				cb := *(*uint64)(add(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+				cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
 				offset := uintptr(cb) + uintptr(dirEntry.unionData)*unsafe.Sizeof(adapter.Counter(0))
-				val := *(*adapter.Counter)(add(unsafe.Pointer(&c.sharedHeader[0]), offset))
+				val := *(*adapter.Counter)(addOffset(unsafe.Pointer(&c.sharedHeader[0]), offset))
 				errData += val
 			}
 		}
@@ -167,83 +190,85 @@ func (c *statSegment) copyData(dirEntry *statSegDirectoryEntry) adapter.Stat {
 
 	case adapter.SimpleCounterVector:
 		if dirEntry.unionData == 0 {
-			Log.Debugf("\toffset is not valid")
+			debugf("offset invalid for %s", dirEntry.name)
 			break
 		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
-			Log.Debugf("\toffset out of range")
+			debugf("offset out of range for %s", dirEntry.name)
 			break
 		}
 
-		simpleCounter := unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]) // offset
-		vecLen := vectorLen(simpleCounter)
-		offsetVector := add(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+		//simpleCounter := unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]) // offset
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
 
 		data := make([][]adapter.Counter, vecLen)
 		for i := uint64(0); i < vecLen; i++ {
-			cb := *(*uint64)(add(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
 			counterVec := unsafe.Pointer(&c.sharedHeader[uintptr(cb)])
 			vecLen2 := vectorLen(counterVec)
+			data[i] = make([]adapter.Counter, vecLen2)
 			for j := uint64(0); j < vecLen2; j++ {
 				offset := uintptr(j) * unsafe.Sizeof(adapter.Counter(0))
-				val := *(*adapter.Counter)(add(counterVec, offset))
-				data[i] = append(data[i], val)
+				val := *(*adapter.Counter)(addOffset(counterVec, offset))
+				data[i][j] = val
 			}
 		}
 		return adapter.SimpleCounterStat(data)
 
 	case adapter.CombinedCounterVector:
 		if dirEntry.unionData == 0 {
-			Log.Debugf("\toffset is not valid")
+			debugf("offset invalid for %s", dirEntry.name)
 			break
 		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
-			Log.Debugf("\toffset out of range")
+			debugf("offset out of range for %s", dirEntry.name)
 			break
 		}
 
-		combinedCounter := unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]) // offset
-		vecLen := vectorLen(combinedCounter)
-		offsetVector := add(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+		//combinedCounter := unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]) // offset
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
 
 		data := make([][]adapter.CombinedCounter, vecLen)
 		for i := uint64(0); i < vecLen; i++ {
-			cb := *(*uint64)(add(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
 			counterVec := unsafe.Pointer(&c.sharedHeader[uintptr(cb)])
 			vecLen2 := vectorLen(counterVec)
+			data[i] = make([]adapter.CombinedCounter, vecLen2)
 			for j := uint64(0); j < vecLen2; j++ {
 				offset := uintptr(j) * unsafe.Sizeof(adapter.CombinedCounter{})
-				val := *(*adapter.CombinedCounter)(add(counterVec, offset))
-				data[i] = append(data[i], val)
+				val := *(*adapter.CombinedCounter)(addOffset(counterVec, offset))
+				data[i][j] = val
 			}
 		}
 		return adapter.CombinedCounterStat(data)
 
 	case adapter.NameVector:
 		if dirEntry.unionData == 0 {
-			Log.Debugf("\toffset is not valid")
+			debugf("offset invalid for %s", dirEntry.name)
 			break
 		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
-			Log.Debugf("\toffset out of range")
+			debugf("offset out of range for %s", dirEntry.name)
 			break
 		}
 
-		nameVector := unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]) // offset
-		vecLen := vectorLen(nameVector)
-		offsetVector := add(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+		//nameVector := // offset
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
 
 		data := make([]adapter.Name, vecLen)
 		for i := uint64(0); i < vecLen; i++ {
-			cb := *(*uint64)(add(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
 			if cb == 0 {
-				Log.Debugf("\tname vector cb out of range")
+				debugf("name vector out of range for %s (%v)", dirEntry.name, i)
 				continue
 			}
 			nameVec := unsafe.Pointer(&c.sharedHeader[cb])
 			vecLen2 := vectorLen(nameVec)
 
-			var nameStr []byte
+			nameStr := make([]byte, 0, vecLen2)
 			for j := uint64(0); j < vecLen2; j++ {
 				offset := uintptr(j) * unsafe.Sizeof(byte(0))
-				val := *(*byte)(add(nameVec, offset))
+				val := *(*byte)(addOffset(nameVec, offset))
 				if val > 0 {
 					nameStr = append(nameStr, val)
 				}
@@ -253,9 +278,148 @@ func (c *statSegment) copyData(dirEntry *statSegDirectoryEntry) adapter.Stat {
 		return adapter.NameStat(data)
 
 	default:
-		Log.Warnf("Unknown type %d for stat entry: %q", dirEntry.directoryType, dirEntry.name)
+		// TODO: monitor occurrences with metrics
+		debugf("Unknown type %d for stat entry: %q", dirEntry.directoryType, dirEntry.name)
 	}
 
+	return nil
+}
+
+var ErrStatDataLenIncorrect = fmt.Errorf("stat data length incorrect")
+
+//func (c *statSegment) updateStatEntry(dirEntry *statSegDirectoryEntry, stat *adapter.StatEntry) error {
+func (c *statSegment) updateData(dirEntry *statSegDirectoryEntry, stat adapter.Stat) error {
+	switch stat.(type) {
+	case adapter.ScalarStat:
+		stat = adapter.ScalarStat(dirEntry.unionData)
+
+	case adapter.ErrorStat:
+		_, errOffset, _ := c.readOffsets()
+		offsetVector := unsafe.Pointer(&c.sharedHeader[errOffset])
+
+		var errData adapter.Counter
+		if c.oldHeader {
+			// error were not vector (per-worker) in VPP 19.04
+			offset := uintptr(dirEntry.unionData) * unsafe.Sizeof(uint64(0))
+			val := *(*adapter.Counter)(addOffset(offsetVector, offset))
+			errData = val
+		} else {
+			vecLen := vectorLen(offsetVector)
+			for i := uint64(0); i < vecLen; i++ {
+				cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+				offset := uintptr(cb) + uintptr(dirEntry.unionData)*unsafe.Sizeof(adapter.Counter(0))
+				val := *(*adapter.Counter)(addOffset(unsafe.Pointer(&c.sharedHeader[0]), offset))
+				errData += val
+			}
+		}
+		stat = adapter.ErrorStat(errData)
+
+	case adapter.SimpleCounterStat:
+		if dirEntry.unionData == 0 {
+			debugf("offset invalid for %s", dirEntry.name)
+			break
+		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
+			debugf("offset out of range for %s", dirEntry.name)
+			break
+		}
+
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+
+		data := stat.(adapter.SimpleCounterStat)
+		if uint64(len(data)) != vecLen {
+			return ErrStatDataLenIncorrect
+		}
+		for i := uint64(0); i < vecLen; i++ {
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			counterVec := unsafe.Pointer(&c.sharedHeader[uintptr(cb)])
+			vecLen2 := vectorLen(counterVec)
+			simpData := data[i]
+			if uint64(len(simpData)) != vecLen2 {
+				return ErrStatDataLenIncorrect
+			}
+			for j := uint64(0); j < vecLen2; j++ {
+				offset := uintptr(j) * unsafe.Sizeof(adapter.Counter(0))
+				val := *(*adapter.Counter)(addOffset(counterVec, offset))
+				simpData[j] = val
+			}
+		}
+
+	case adapter.CombinedCounterStat:
+		if dirEntry.unionData == 0 {
+			debugf("offset invalid for %s", dirEntry.name)
+			break
+		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
+			debugf("offset out of range for %s", dirEntry.name)
+			break
+		}
+
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+
+		data := stat.(adapter.CombinedCounterStat)
+		if uint64(len(data)) != vecLen {
+			return ErrStatDataLenIncorrect
+		}
+		for i := uint64(0); i < vecLen; i++ {
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			counterVec := unsafe.Pointer(&c.sharedHeader[uintptr(cb)])
+			vecLen2 := vectorLen(counterVec)
+			combData := data[i]
+			if uint64(len(combData)) != vecLen2 {
+				return ErrStatDataLenIncorrect
+			}
+			for j := uint64(0); j < vecLen2; j++ {
+				offset := uintptr(j) * unsafe.Sizeof(adapter.CombinedCounter{})
+				val := *(*adapter.CombinedCounter)(addOffset(counterVec, offset))
+				combData[j] = val
+			}
+		}
+
+	case adapter.NameStat:
+		if dirEntry.unionData == 0 {
+			debugf("offset invalid for %s", dirEntry.name)
+			break
+		} else if dirEntry.unionData >= uint64(len(c.sharedHeader)) {
+			debugf("offset out of range for %s", dirEntry.name)
+			break
+		}
+
+		vecLen := vectorLen(unsafe.Pointer(&c.sharedHeader[dirEntry.unionData]))
+		offsetVector := addOffset(unsafe.Pointer(&c.sharedHeader[0]), uintptr(dirEntry.offsetVector))
+
+		data := stat.(adapter.NameStat)
+		if uint64(len(data)) != vecLen {
+			return ErrStatDataLenIncorrect
+		}
+		for i := uint64(0); i < vecLen; i++ {
+			cb := *(*uint64)(addOffset(offsetVector, uintptr(i)*unsafe.Sizeof(uint64(0))))
+			if cb == 0 {
+				continue
+			}
+			nameVec := unsafe.Pointer(&c.sharedHeader[cb])
+			vecLen2 := vectorLen(nameVec)
+
+			nameData := data[i]
+			if uint64(len(nameData))+1 != vecLen2 {
+				return ErrStatDataLenIncorrect
+			}
+			for j := uint64(0); j < vecLen2; j++ {
+				offset := uintptr(j) * unsafe.Sizeof(byte(0))
+				val := *(*byte)(addOffset(nameVec, offset))
+				if val == 0 {
+					break
+				}
+				nameData[j] = val
+			}
+		}
+
+	default:
+		/*if Debug {
+			debugf("Unrecognized stat type %T for stat entry: %v", stat, dirEntry.name)
+		}*/
+		//return fmt.Errorf("unrecognized stat type %T", stat)
+	}
 	return nil
 }
 
@@ -330,16 +494,18 @@ type statSegAccess struct {
 	epoch int64
 }
 
-func (c *statSegment) accessStart() *statSegAccess {
-	epoch, inprog := c.readEpoch()
+func (c *statSegment) accessStart() statSegAccess {
 	t := time.Now()
+	epoch, inprog := c.readEpoch()
 	for inprog {
-		if time.Since(t) > maxWaitInProgress {
-			return nil
+		if time.Since(t) > MaxWaitInProgress {
+			return statSegAccess{}
+		} else {
+			time.Sleep(CheckDelayInProgress)
 		}
 		epoch, inprog = c.readEpoch()
 	}
-	return &statSegAccess{
+	return statSegAccess{
 		epoch: epoch,
 	}
 }
@@ -363,6 +529,6 @@ func vectorLen(v unsafe.Pointer) uint64 {
 }
 
 //go:nosplit
-func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(p) + x)
+func addOffset(p unsafe.Pointer, offset uintptr) unsafe.Pointer {
+	return unsafe.Pointer(uintptr(p) + offset)
 }
