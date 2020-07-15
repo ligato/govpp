@@ -46,7 +46,7 @@ func TestReadJson(t *testing.T) {
 
 	inputData, err := ioutil.ReadFile("testdata/af_packet.api.json")
 	Expect(err).ShouldNot(HaveOccurred())
-	result, err := parseJSON(inputData)
+	result, err := ParseRaw(inputData)
 	Expect(err).ShouldNot(HaveOccurred())
 	Expect(result).ToNot(BeNil())
 	Expect(result.EnumTypes).To(HaveLen(0))
@@ -60,7 +60,7 @@ func TestReadJsonError(t *testing.T) {
 
 	inputData, err := ioutil.ReadFile("testdata/input-read-json-error.json")
 	Expect(err).ShouldNot(HaveOccurred())
-	result, err := parseJSON(inputData)
+	result, err := ParseRaw(inputData)
 	Expect(err).Should(HaveOccurred())
 	Expect(result).To(BeNil())
 }
@@ -80,17 +80,21 @@ func TestParseFile(t *testing.T) {
 	if module.Name != "vpe" {
 		t.Errorf("expected Name=%s, got %v", "vpe", module.Name)
 	}
+	if module.Path != "testdata/vpe.api.json" {
+		t.Errorf("expected Path=%s, got %v", "testdata/vpe.api.json", module.Path)
+	}
 	if module.CRC != "0xbd2c94f4" {
 		t.Errorf("expected CRC=%s, got %v", "0xbd2c94f4", module.CRC)
 	}
-	if module.Version() != "1.6.1" {
-		t.Errorf("expected Version=%s, got %v", "1.6.1", module.Version())
+
+	if version := module.Options["version"]; version != "1.6.1" {
+		t.Errorf("expected option[version]=%s, got %v", "1.6.1", version)
 	}
 	if len(module.Imports) == 0 {
 		t.Errorf("expected imports, got none")
 	}
-	if len(module.Options) == 0 {
-		t.Errorf("expected options, got none")
+	if len(module.EnumTypes) == 0 {
+		t.Errorf("expected enums, got none")
 	}
 	if len(module.AliasTypes) == 0 {
 		t.Errorf("expected aliases, got none")
@@ -98,11 +102,11 @@ func TestParseFile(t *testing.T) {
 	if len(module.StructTypes) == 0 {
 		t.Errorf("expected types, got none")
 	}
-	if len(module.Service.RPCs) == 0 {
-		t.Errorf("expected service method, got none")
-	}
 	if len(module.Messages) == 0 {
 		t.Errorf("expected messages, got none")
+	}
+	if len(module.Service.RPCs) == 0 {
+		t.Errorf("expected service RPCs, got none")
 	}
 }
 

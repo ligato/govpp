@@ -17,12 +17,12 @@ package main
 
 import (
 	"fmt"
-	"git.fd.io/govpp.git/codec"
-	"git.fd.io/govpp.git/examples/binapi/interfaces"
-	"git.fd.io/govpp.git/examples/binapi/ip"
-	"git.fd.io/govpp.git/examples/binapi/ip_types"
 	"log"
-	"reflect"
+
+	"git.fd.io/govpp.git/binapi/ethernet_types"
+	"git.fd.io/govpp.git/binapi/ip"
+	"git.fd.io/govpp.git/binapi/ip_types"
+	"git.fd.io/govpp.git/codec"
 )
 
 func init() {
@@ -69,11 +69,12 @@ func encodingExampleIP() {
 			Nh: ip_types.Address{
 				Af: ip_types.ADDRESS_IP4,
 				Un: ip_types.AddressUnionIP4(ip_types.IP4Address{192, 168, 1, 10}),
+				//X:  ip_types.AddressIP4(ip_types.IP4Address{192, 168, 1, 10}),
 			},
 		},
 		IsAdd: true,
 	}
-	log.Printf("encoding message: %+v", msg)
+	log.Printf("encoding message: %#v", msg)
 
 	b, err := c.EncodeMsg(&msg, 1)
 	if err != nil {
@@ -85,10 +86,10 @@ func encodingExampleIP() {
 	if err := c.DecodeMsg(b, &msg2); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("decoded message: %+v", msg2)
+	log.Printf("decoded message: %#v", msg2)
 
 	// compare the messages
-	if !reflect.DeepEqual(msg, msg2) {
+	if !msg.Punt.Nh.ToIP().Equal(msg2.Punt.Nh.ToIP()) {
 		log.Fatal("messages are not equal")
 	}
 }
@@ -99,10 +100,9 @@ func convertIP(ip string) {
 		log.Printf("error converting IP to Address: %v", err)
 		return
 	}
-	fmt.Printf("converted IP %q to: %+v\n", ip, addr)
+	fmt.Printf("converted IP %q to: %#v\n", ip, addr)
 
-	ipStr := addr.ToString()
-	fmt.Printf("Address converted back to string IP %+v to: %q\n", addr, ipStr)
+	fmt.Printf("Address converted back to string IP %#v to: %s\n", addr, addr)
 }
 
 func convertIPPrefix(ip string) {
@@ -111,20 +111,18 @@ func convertIPPrefix(ip string) {
 		log.Printf("error converting prefix to IP4Prefix: %v", err)
 		return
 	}
-	fmt.Printf("converted prefix %q to: %+v\n", ip, prefix)
+	fmt.Printf("converted prefix %q to: %#v\n", ip, prefix)
 
-	ipStr := prefix.ToString()
-	fmt.Printf("IP4Prefix converted back to string prefix %+v to: %q\n", prefix, ipStr)
+	fmt.Printf("IP4Prefix converted back to string prefix %#v to: %s\n", prefix, prefix)
 }
 
 func convertToMacAddress(mac string) {
-	parsedMac, err := interfaces.ParseMAC(mac)
+	parsedMac, err := ethernet_types.ParseMacAddress(mac)
 	if err != nil {
 		log.Printf("error converting MAC to MacAddress: %v", err)
 		return
 	}
-	fmt.Printf("converted prefix %q to: %+v\n", mac, parsedMac)
+	fmt.Printf("converted mac %q to: %#v\n", mac, parsedMac)
 
-	macStr := parsedMac.ToString()
-	fmt.Printf("MacAddress converted back to string %+v to: %q\n", parsedMac, macStr)
+	fmt.Printf("MacAddress converted back to string %#v to: %s\n", parsedMac, parsedMac)
 }

@@ -15,6 +15,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -126,9 +127,9 @@ func (*MsgCodec) DecodeMsgContext(data []byte, msg api.Message) (context uint32,
 
 	switch msg.GetMessageType() {
 	case api.RequestMessage:
-		return order.Uint32(data[6:10]), nil
+		return binary.BigEndian.Uint32(data[6:10]), nil
 	case api.ReplyMessage:
-		return order.Uint32(data[2:6]), nil
+		return binary.BigEndian.Uint32(data[2:6]), nil
 	}
 
 	return 0, nil

@@ -2,13 +2,15 @@ package codec_test
 
 import (
 	"bytes"
-	"git.fd.io/govpp.git/examples/binapi/ip_types"
 	"testing"
 
+	"git.fd.io/govpp.git/binapi/ip_types"
+
 	"git.fd.io/govpp.git/api"
+	"git.fd.io/govpp.git/binapi/ip"
+	"git.fd.io/govpp.git/binapi/sr"
+	"git.fd.io/govpp.git/binapi/vpe"
 	"git.fd.io/govpp.git/codec"
-	"git.fd.io/govpp.git/examples/binapi/ip"
-	"git.fd.io/govpp.git/examples/binapi/vpe"
 )
 
 type MyMsg struct {
@@ -58,9 +60,9 @@ func TestEncode(t *testing.T) {
 			msgID:   743,
 			expData: []byte{0x02, 0xE7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 		},
-		/*{name: "sr",
+		{name: "sr",
 			msg: &sr.SrPolicyAdd{
-				BsidAddr: sr.IP6Address{},
+				BsidAddr: ip_types.IP6Address{},
 				Weight:   0,
 				IsEncap:  false,
 				IsSpray:  false,
@@ -69,7 +71,7 @@ func TestEncode(t *testing.T) {
 			},
 			msgID:   99,
 			expData: []byte{0x00, 0x64, 0x00, 0x01, 0x41, 0x62, 0x63, 0x64, 0x65, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8},
-		},*/
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -80,7 +82,7 @@ func TestEncode(t *testing.T) {
 				t.Fatalf("expected nil error, got: %v", err)
 			}
 			if !bytes.Equal(data, test.expData) {
-				t.Fatalf("expected data: % 0X, got: % 0X", test.expData, data)
+				t.Fatalf("expected data:\n% 0X, got:\n% 0X", test.expData, data)
 			}
 		})
 	}

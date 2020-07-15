@@ -18,67 +18,70 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/sirupsen/logrus"
 
 	"git.fd.io/govpp.git/binapigen/vppapi"
 )
 
-const (
-	outputFileExt = ".ba.go" // file extension of the Go generated files
-	rpcFileSuffix = "_rpc"   // file name suffix for the RPC services
-)
-
-func Run(apiDir string, opts Options, f func(*Generator) error) {
-	if err := run(apiDir, opts, f); err != nil {
+func Run(apiDir string, filesToGenerate []string, opts Options, f func(*Generator) error) {
+	if err := run(apiDir, filesToGenerate, opts, f); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Base(os.Args[0]), err)
 		os.Exit(1)
 	}
 }
 
-func run(apiDir string, opts Options, f func(*Generator) error) error {
-	// parse API files
+func run(apiDir string, filesToGenerate []string, opts Options, fn func(*Generator) error) error {
 	apifiles, err := vppapi.ParseDir(apiDir)
 	if err != nil {
 		return err
 	}
 
-	g, err := New(opts, apifiles)
+	gen, err := New(opts, apifiles, filesToGenerate)
 	if err != nil {
 		return err
 	}
+	gen.vppVersion = vppapi.ResolveVPPVersion(apiDir)
 
-	if err := f(g); err != nil {
-		return err
+	if fn == nil {
+		GenerateDefault(gen)
+	} else {
+		if err := fn(gen); err != nil {
+			return err
+		}
 	}
 
-	if err = g.Generate(); err != nil {
+	if err = gen.Generate(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func GenerateBinapi(gen *Generator, file *File, outputDir string) *GenFile {
-	packageDir := filepath.Join(outputDir, file.PackageName)
-	filename := filepath.Join(packageDir, file.PackageName+outputFileExt)
-
-	g := gen.NewGenFile(filename)
-	g.file = file
-	g.outputDir = outputDir
-
-	generateFileBinapi(g, &g.buf)
-
-	return g
+func GenerateDefault(gen *Generator) {
+	for _, file := range gen.Files {
+		if !file.Generate {
+			continue
+		}
+		GenerateAPI(gen, file)
+		GenerateRPC(gen, file)
+	}
 }
 
-func GenerateRPC(gen *Generator, file *File, outputDir string) *GenFile {
-	packageDir := filepath.Join(outputDir, file.PackageName)
-	filename := filepath.Join(packageDir, file.PackageName+rpcFileSuffix+outputFileExt)
+var Logger = logrus.New() //*logrus.Logger
 
-	g := gen.NewGenFile(filename)
-	g.file = file
-	g.outputDir = outputDir
+func init() {
+	if debug := os.Getenv("DEBUG_GOVPP"); strings.Contains(debug, "binapigen") {
+		Logger.SetLevel(logrus.DebugLevel)
+		logrus.SetLevel(logrus.DebugLevel)
+	} else if debug != "" {
+		Logger.SetLevel(logrus.InfoLevel)
+	} else {
+		Logger.SetLevel(logrus.WarnLevel)
+	}
+}
 
-	generateFileRPC(g, &g.buf)
-
-	return g
+func logf(f string, v ...interface{}) {
+	Logger. /*WithField("logger", "binapigen").*/ Debugf(f, v...)
 }

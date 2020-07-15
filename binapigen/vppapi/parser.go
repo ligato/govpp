@@ -19,18 +19,15 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"strings"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
-	DefaultAPIDir = "/usr/share/vpp/api"
+	// DefaultDir is default location of API files.
+	DefaultDir = "/usr/share/vpp/api"
 )
 
-const apifileSuffixJson = ".api.json"
-
-// FindFiles returns all input files located in specified directory
-func FindFiles(dir string, deep int) (paths []string, err error) {
+// FindFiles finds API files located in dir or in a nested directory that is not nested deeper than deep.
+func FindFiles(dir string, deep int) (files []string, err error) {
 	entries, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("reading directory %s failed: %v", dir, err)
@@ -41,43 +38,44 @@ func FindFiles(dir string, deep int) (paths []string, err error) {
 			if nested, err := FindFiles(nestedDir, deep-1); err != nil {
 				return nil, err
 			} else {
-				paths = append(paths, nested...)
+				files = append(files, nested...)
 			}
-		} else if strings.HasSuffix(e.Name(), apifileSuffixJson) {
-			paths = append(paths, filepath.Join(dir, e.Name()))
+		} else if !e.IsDir() && strings.HasSuffix(e.Name(), ".api.json") {
+			files = append(files, filepath.Join(dir, e.Name()))
 		}
 	}
-	return paths, nil
+	return files, nil
 }
 
+// Parse parses API files in directory DefaultDir.
 func Parse() ([]*File, error) {
-	return ParseDir(DefaultAPIDir)
+	return ParseDir(DefaultDir)
 }
 
+// ParseDir finds and parses API files in given directory and returns parsed files.
+// Supports API files in JSON format (.api.json) only.
 func ParseDir(apidir string) ([]*File, error) {
-	files, err := FindFiles(apidir, 1)
+	list, err := FindFiles(apidir, 1)
 	if err != nil {
 		return nil, err
 	}
 
-	logrus.Infof("found %d files in API dir %q", len(files), apidir)
+	logf("found %d files in API dir %q", len(list), apidir)
 
-	var modules []*File
-
-	for _, file := range files {
+	var files []*File
+	for _, file := range list {
 		module, err := ParseFile(file)
 		if err != nil {
 			return nil, err
 		}
-		modules = append(modules, module)
+		files = append(files, module)
 	}
-
-	return modules, nil
+	return files, nil
 }
 
-// ParseFile parses API file contents and returns File.
+// ParseFile parses API file and returns File.
 func ParseFile(apifile string) (*File, error) {
-	if !strings.HasSuffix(apifile, apifileSuffixJson) {
+	if !strings.HasSuffix(apifile, ".api.json") {
 		return nil, fmt.Errorf("unsupported file format: %q", apifile)
 	}
 
@@ -101,7 +99,14 @@ func ParseFile(apifile string) (*File, error) {
 	return module, nil
 }
 
+// ParseRaw parses raw API file data and returns File.
 func ParseRaw(data []byte) (file *File, err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = fmt.Errorf("panic occurred: %v", e)
+		}
+	}()
+
 	file, err = parseJSON(data)
 	if err != nil {
 		return nil, err

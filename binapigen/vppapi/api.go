@@ -12,83 +12,78 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
+// Package vppapi parses VPP API files without any additional processing.
 package vppapi
 
-type File struct {
-	Name string
-	Path string
+type (
+	File struct {
+		Name string
+		Path string
+		CRC  string
 
-	CRC     string
-	Options map[string]string `json:",omitempty"`
+		Options map[string]string `json:",omitempty"`
+		Imports []string          `json:",omitempty"`
 
-	Imports []string `json:",omitempty"`
+		AliasTypes  []AliasType  `json:",omitempty"`
+		EnumTypes   []EnumType   `json:",omitempty"`
+		StructTypes []StructType `json:",omitempty"`
+		UnionTypes  []UnionType  `json:",omitempty"`
 
-	AliasTypes  []AliasType  `json:",omitempty"`
-	EnumTypes   []EnumType   `json:",omitempty"`
-	StructTypes []StructType `json:",omitempty"`
-	UnionTypes  []UnionType  `json:",omitempty"`
-	Messages    []Message    `json:",omitempty"`
-	Service     *Service     `json:",omitempty"`
-}
-
-func (x File) Version() string {
-	if x.Options != nil {
-		return x.Options[fileOptionVersion]
+		Messages []Message `json:",omitempty"`
+		Service  *Service  `json:",omitempty"`
 	}
-	return ""
-}
 
-type AliasType struct {
-	Name   string
-	Type   string
-	Length int `json:",omitempty"`
-}
+	AliasType struct {
+		Name   string
+		Type   string
+		Length int `json:",omitempty"`
+	}
 
-type EnumType struct {
-	Name    string
-	Type    string
-	Entries []EnumEntry
-}
+	EnumType struct {
+		Name    string
+		Type    string
+		Entries []EnumEntry
+	}
 
-type EnumEntry struct {
-	Name  string
-	Value uint32
-}
+	EnumEntry struct {
+		Name  string
+		Value uint32
+	}
 
-type StructType struct {
-	Name   string
-	Fields []Field
-}
+	StructType struct {
+		Name   string
+		Fields []Field
+	}
 
-type UnionType struct {
-	Name   string
-	Fields []Field
-}
+	UnionType struct {
+		Name   string
+		Fields []Field
+	}
 
-type Message struct {
-	Name   string
-	Fields []Field
-	CRC    string
-}
+	Message struct {
+		Name   string
+		Fields []Field
+		CRC    string
+	}
 
-type Field struct {
-	Name     string
-	Type     string
-	Length   int                    `json:",omitempty"`
-	Array    bool                   `json:",omitempty"`
-	SizeFrom string                 `json:",omitempty"`
-	Meta     map[string]interface{} `json:",omitempty"`
-}
+	Field struct {
+		Name     string
+		Type     string
+		Length   int                    `json:",omitempty"`
+		Array    bool                   `json:",omitempty"`
+		SizeFrom string                 `json:",omitempty"`
+		Meta     map[string]interface{} `json:",omitempty"`
+	}
 
-type Service struct {
-	RPCs []RPC `json:",omitempty"`
-}
+	Service struct {
+		RPCs []RPC `json:",omitempty"`
+	}
 
-type RPC struct {
-	Name       string
-	RequestMsg string
-	ReplyMsg   string
-	Stream     bool     `json:",omitempty"`
-	StreamMsg  string   `json:",omitempty"`
-	Events     []string `json:",omitempty"`
-}
+	RPC struct {
+		Request   string
+		Reply     string
+		Stream    bool     `json:",omitempty"`
+		StreamMsg string   `json:",omitempty"`
+		Events    []string `json:",omitempty"`
+	}
+)

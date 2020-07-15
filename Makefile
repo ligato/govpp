@@ -79,7 +79,7 @@ install: install-generator install-proxy ## Install all
 
 install-generator: ## Install binapi-generator
 	@echo "# installing binapi-generator ${VERSION}"
-	$(GO) install ${GO_BUILD_ARGS} ./cmd/binapi-generator
+	@$(GO) install ${GO_BUILD_ARGS} ./cmd/binapi-generator
 
 install-proxy: ## Install vpp-proxy
 	@echo "# installing vpp-proxy ${VERSION}"
