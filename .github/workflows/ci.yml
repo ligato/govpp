@@ -39,7 +39,7 @@ jobs:
           mkdir -p bin
           GOBIN=$(pwd)/bin make install-generator
           export PATH=$PATH:"$(pwd)/bin"
-          binapi-generator version
+          binapi-generator --version
       - name: Generate
         run: |
           export PATH=$PATH:"$(pwd)/bin"
