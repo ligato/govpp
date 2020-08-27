@@ -44,5 +44,10 @@ jobs:
         run: |
           export PATH=$PATH:"$(pwd)/bin"
           make gen-binapi-docker
+      - name: Test
+        run: |
+          go test -v ./binapi/...
       - name: Show diff
-        run: git diff --color
+        run: |
+          git diff --stat --color
+          git diff --color
