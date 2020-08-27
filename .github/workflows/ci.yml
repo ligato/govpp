@@ -1,0 +1,40 @@
+---
+name: CI
+
+on:
+  push:
+      branches: master
+  pull_request:
+      branches: master
+  schedule:
+    - cron: "0 5 * * *"
+
+jobs:
+  checkgomod:
+    name: check go.mod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v1
+        with:
+          go-version: 1.13
+      - run: go mod tidy -v
+      - name: Check for changes in go.mod
+        run: |
+          git diff --name-only --exit-code go.mod || ( git diff && echo "Run go tidy to update go.mod" && false 
+  genbinapi:
+    name: generate binapi
+    runs-on: ubuntu-18.04
+    env:
+      VPP_IMG: ligato/vpp-base:${{ matrix.vpp_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        vpp_version: ['latest', '20.05', '20.01', 'master']
+    steps:
+      - uses: actions/checkout@v2
+      - name: Generate
+        run: |
+          make gen-binapi-docker
+      - name: Show diff
+        run: git diff
