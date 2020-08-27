@@ -35,9 +35,14 @@ jobs:
       - uses: actions/setup-go@v1
         with:
           go-version: 1.14
-      - run: make install-generator
+      - run: |
+          mkdir -p bin
+          GOBIN=$(pwd)/bin make install-generator
+          export PATH=$PATH:"$(pwd)/bin"
+          binapi-generator version
       - name: Generate
         run: |
+          export PATH=$PATH:"$(pwd)/bin"
           make gen-binapi-docker
       - name: Show diff
         run: git diff
