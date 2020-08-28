@@ -20,7 +20,7 @@ jobs:
       - run: go mod tidy -v
       - name: Check for changes in go.mod
         run: |
-          git diff --name-only --exit-code go.mod || ( git diff && echo "Run go tidy to update go.mod" && false 
+          git diff --name-only --exit-code go.mod || ( git diff && echo "Run go tidy to update go.mod" && false )
   genbinapi:
     name: generate binapi
     runs-on: ubuntu-18.04
